@@ -1,0 +1,13 @@
+caltech101_processed/
+caltech-101/
+caltech101_output/
+caltech101/
+checkpoints/
+results/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
