@@ -290,7 +290,14 @@ def train_model(model: nn.Module, train_loader: torch.utils.data.DataLoader,
                 'val_acc': val_acc,
                 'val_loss': val_loss,
                 'train_acc': train_acc,
-                'train_loss': train_loss
+                'train_loss': train_loss,
+                'metrics': {
+                    'train_losses': metrics.train_losses,
+                    'val_losses': metrics.val_losses,
+                    'train_accuracies': metrics.train_accuracies,
+                    'val_accuracies': metrics.val_accuracies,
+                    'learning_rates': metrics.learning_rates
+                }
             }, os.path.join(save_dir, 'best_model.pth'))
             
             print(f"New best model saved! Validation Accuracy: {val_acc:.4f}")
@@ -416,6 +423,161 @@ def load_trained_model(model: nn.Module, checkpoint_path: str, device: torch.dev
     print(f"Best validation accuracy: {checkpoint['val_acc']:.4f}")
     
     return model
+
+
+def resume_training(model: nn.Module, train_loader: torch.utils.data.DataLoader,
+                   val_loader: torch.utils.data.DataLoader, checkpoint_path: str,
+                   num_epochs: int, learning_rate: float = 0.001, weight_decay: float = 1e-4,
+                   device: torch.device = None, save_dir: str = './checkpoints',
+                   early_stopping_patience: int = 10) -> Dict[str, Any]:
+    """
+    Resume training from a checkpoint
+    Args:
+        model: The hybrid model
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        checkpoint_path: Path to the checkpoint file
+        num_epochs: Number of additional epochs to train
+        learning_rate: Learning rate (will be overridden by checkpoint if available)
+        weight_decay: Weight decay for optimizer
+        device: Device to train on
+        save_dir: Directory to save checkpoints
+        early_stopping_patience: Patience for early stopping
+    Returns:
+        training_info: Dictionary containing training information
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    model = model.to(device)
+    
+    # Create save directory
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Load checkpoint
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Load model state
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # Load optimizer state if available
+    if 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"Loaded optimizer state from epoch {checkpoint['epoch']}")
+    
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=5
+    )
+    
+    # TensorBoard writer
+    writer = SummaryWriter(log_dir=os.path.join(save_dir, 'logs'))
+    
+    # Metrics tracking - load existing metrics if available
+    metrics = TrainingMetrics()
+    if 'metrics' in checkpoint:
+        # Load existing metrics
+        saved_metrics = checkpoint['metrics']
+        metrics.train_losses = saved_metrics.get('train_losses', [])
+        metrics.val_losses = saved_metrics.get('val_losses', [])
+        metrics.train_accuracies = saved_metrics.get('train_accuracies', [])
+        metrics.val_accuracies = saved_metrics.get('val_accuracies', [])
+        metrics.learning_rates = saved_metrics.get('learning_rates', [])
+        print(f"Loaded existing metrics from {len(metrics.train_losses)} epochs")
+    
+    # Early stopping
+    best_val_acc = checkpoint.get('val_acc', 0.0)
+    patience_counter = 0
+    
+    print(f"Resuming training on device: {device}")
+    print(f"Starting from epoch {checkpoint['epoch'] + 1}")
+    print(f"Best validation accuracy so far: {best_val_acc:.4f}")
+    print(f"Additional epochs to train: {num_epochs}")
+    
+    for epoch in range(checkpoint['epoch'] + 1, checkpoint['epoch'] + 1 + num_epochs):
+        print(f"\nEpoch {epoch}/{checkpoint['epoch'] + num_epochs}")
+        print("-" * 50)
+        
+        # Train
+        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
+        
+        # Validate
+        val_loss, val_acc, val_metrics = validate_epoch(model, val_loader, criterion, device)
+        
+        # Update learning rate
+        scheduler.step(val_acc)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Update metrics
+        metrics.update(train_loss, val_loss, train_acc, val_acc, current_lr)
+        
+        # Log to TensorBoard
+        writer.add_scalar('Loss/Train', train_loss, epoch)
+        writer.add_scalar('Loss/Validation', val_loss, epoch)
+        writer.add_scalar('Accuracy/Train', train_acc, epoch)
+        writer.add_scalar('Accuracy/Validation', val_acc, epoch)
+        writer.add_scalar('Learning_Rate', current_lr, epoch)
+        
+        # Print progress
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
+        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+        print(f"Learning Rate: {current_lr:.6f}")
+        print(f"Additional Metrics: {val_metrics}")
+        
+        # Save best model
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_counter = 0
+            
+            # Save model with updated checkpoint info
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_acc': val_acc,
+                'val_loss': val_loss,
+                'train_acc': train_acc,
+                'train_loss': train_loss,
+                'metrics': {
+                    'train_losses': metrics.train_losses,
+                    'val_losses': metrics.val_losses,
+                    'train_accuracies': metrics.train_accuracies,
+                    'val_accuracies': metrics.val_accuracies,
+                    'learning_rates': metrics.learning_rates
+                }
+            }, os.path.join(save_dir, 'best_model.pth'))
+            
+            print(f"New best model saved! Validation Accuracy: {val_acc:.4f}")
+        else:
+            patience_counter += 1
+        
+        # Early stopping
+        if patience_counter >= early_stopping_patience:
+            print(f"Early stopping triggered after {epoch+1} epochs")
+            break
+    
+    # Save final metrics
+    metrics.save_metrics(os.path.join(save_dir, 'training_metrics.json'))
+    writer.close()
+    
+    # Load best model
+    best_model_path = os.path.join(save_dir, 'best_model.pth')
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded best model from epoch {checkpoint['epoch']}")
+    
+    return {
+        'model': model,
+        'best_val_acc': best_val_acc,
+        'metrics': metrics,
+        'checkpoint_path': best_model_path
+    }
 
 
 if __name__ == "__main__":
