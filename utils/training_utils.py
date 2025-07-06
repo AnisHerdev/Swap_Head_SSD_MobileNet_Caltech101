@@ -39,6 +39,21 @@ class TrainingMetrics:
     
     def save_metrics(self, filepath: str):
         """Save metrics to JSON file"""
+        def convert_numpy_types(obj):
+            """Convert numpy types to native Python types for JSON serialization"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy_types(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(item) for item in obj]
+            else:
+                return obj
+        
         metrics = {
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
@@ -47,6 +62,9 @@ class TrainingMetrics:
             'learning_rates': self.learning_rates,
             'best_epoch': self.get_best_epoch()
         }
+        
+        # Convert any numpy types to native Python types
+        metrics = convert_numpy_types(metrics)
         
         with open(filepath, 'w') as f:
             json.dump(metrics, f, indent=2)
