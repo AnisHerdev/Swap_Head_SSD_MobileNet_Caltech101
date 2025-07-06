@@ -202,6 +202,28 @@ def main():
     
     print("\nResume training completed successfully!")
 
+    # Save best model (for best performance)
+    if training_info['best_val_acc'] > training_info['best_val_acc']:
+        torch.save({
+            'epoch': training_info['epoch'],
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': training_info['optimizer'].state_dict(),
+            'scheduler_state_dict': training_info['scheduler'].state_dict(),
+            'val_acc': training_info['best_val_acc'],
+            'metrics': training_info['best_metrics']
+        }, os.path.join(args.output_dir, 'best_model.pth'))
+
+    # Save last model (for resuming)
+    torch.save({
+        'epoch': training_info['epoch'],
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': training_info['optimizer'].state_dict(),
+        'scheduler_state_dict': training_info['scheduler'].state_dict(),
+        'val_acc': training_info['best_val_acc'],
+        'train_acc': training_info['best_train_acc'],
+        'metrics': training_info['best_metrics']
+    }, os.path.join(args.output_dir, 'last_model.pth'))
+
 
 if __name__ == "__main__":
     main() 
